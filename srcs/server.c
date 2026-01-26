@@ -19,7 +19,7 @@
 
 /*
  * server.c
- * Name:
+ * Name: Daniel Rudnick
  * PUID:
  */
 
@@ -41,7 +41,65 @@
  * Print received message to stdout
  * Return 0 on success, non-zero on failure
  */
-int server(char *server_port) { return 0; }
+int server(char *server_port) {
+  // Create initial socket
+  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  if(sockfd == -1) {
+      perror("socket");
+      return -1;
+  }
+
+  // Build server socket address
+  struct sockaddr_in sin;
+  bzero((char *)&sin, sizeof(sin));
+  sin.sin_family = AF_INET;
+  sin.sin_addr.s_addr = INADDR_ANY;
+  // Convert to network byte format
+  sin.sin_port = htons(atoi(server_port));
+
+  // Bind to port
+  if ((bind(sockfd, (struct sockaddr *)&sin, sizeof(sin))) < 0) {
+    perror("bind");
+    close(sockfd);
+    return -1;
+  }
+
+  if((listen(sockfd,QUEUE_LENGTH)) < 0) {
+    perror("listen");
+    close(sockfd);
+    return -1;
+  }
+  // Main server socket is setup and ready to go
+  while(1) {
+    // Create per connection socket
+    struct sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+    int newfd = accept(sockfd, (struct sockaddr *)&client_addr, &client_len);
+    if(newfd < 0) {
+      perror("accept");
+      continue;
+    }
+    char buffer[RECV_BUFFER_SIZE];
+    int bytes = 0;
+    while(1) {
+      bytes = recv(newfd,buffer,RECV_BUFFER_SIZE,0);
+      if(bytes > 0) {
+        fwrite(buffer, 1, bytes, stdout);
+        fflush(stdout);
+      } else if(bytes == 0) {
+        // EOF, client done sending
+        close(newfd);
+        break;
+      } else {
+        perror("recv");
+        close(newfd);
+        break;
+      }
+    }
+    
+  }
+  return 0;
+}
 
 /*
  * main():
