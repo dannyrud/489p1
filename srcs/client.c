@@ -32,6 +32,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <arpa/inet.h>
 
 #define SEND_BUFFER_SIZE 2048
 
@@ -39,7 +40,64 @@
  * Open socket and send message from stdin.
  * Return 0 on success, non-zero on failure
  */
-int client(char *server_ip, char *server_port) { return 0; }
+int client(char *server_ip, char *server_port) { 
+  int sockfd = socket(AF_INET,SOCK_STREAM,0);
+  if(sockfd == -1) {
+      perror("socket");
+      return -1;
+  }
+  // Build server address
+  struct sockaddr_in server;
+  memset(&server, 0, sizeof(server));
+  server.sin_family = AF_INET;
+  int port = atoi(server_port);
+  server.sin_port = htons(port);
+  // Convert Server IP to binary format
+  if (inet_pton(AF_INET, server_ip, &server.sin_addr) <= 0) {
+    close(sockfd);
+    fprintf(stderr, "Invalid IP Address\n");
+    return -1;
+  }
+  // Located the server, time to do TCP handshake
+  if (connect(sockfd, (struct sockaddr *)&server, sizeof(server)) < 0){
+    perror("connect");
+    close(sockfd);
+    return -1;
+  }
+  // TCP connection established can send now
+  char buffer[SEND_BUFFER_SIZE];
+  while (1){
+    size_t bytes = fread(buffer,1,SEND_BUFFER_SIZE,stdin);
+    if (bytes > 0) {
+    size_t bytes_sent = 0;
+    while (bytes_sent < bytes) {
+      ssize_t n = send(sockfd, buffer + bytes_sent, bytes - bytes_sent, 0);
+      if (n < 0) {
+        perror("send");
+        close(sockfd);
+        return -1;
+      }
+      if (n == 0) {
+        fprintf(stderr, "send returned 0\n");
+        close(sockfd);
+        return -1;
+      }
+      bytes_sent += (size_t)n;
+    }
+  } else {
+      if(feof(stdin)) {
+        // Nothing left to send from stdin
+        close(sockfd);
+        break;
+      } else {
+        fprintf(stderr, "stdin error\n");
+        close(sockfd);
+        return -1;
+      }
+    }
+  }
+  return 0;
+}
 
 /*
  * main()
