@@ -20,6 +20,7 @@
 #############################################################################
 
 from scapy.all import *
+from scapy.layers.inet import IP, TCP
 import threading
 
 SEND_PACKET_SIZE = 1000  # should be less than max packet size of 1500 bytes
@@ -70,22 +71,6 @@ class Client3WH:
 
         ### BEGIN: ADD YOUR CODE HERE ... ###
         
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-
         ### END: ADD YOUR CODE HERE ... #####
 
     def connect(self):
@@ -95,29 +80,11 @@ class Client3WH:
            2. Make sure to update the `sequence` and `acknowledgement` numbers correctly, along with the 
               TCP `flags`.
         """
-
-        ### BEGIN: ADD YOUR CODE HERE ... ###
+        # Send SYN
+        syn_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="S", seq=self.next_seq)
+        self.next_seq += 1
+        synack_packet = sr1(syn_packet)
         
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-
-        ### END: ADD YOUR CODE HERE ... #####
 
         self.connected = True
         self._start_sniffer()
@@ -133,17 +100,6 @@ class Client3WH:
 
         ### BEGIN: ADD YOUR CODE HERE ... ###
         
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-
         ### END: ADD YOUR CODE HERE ... #####
 
         self.connected = False
@@ -156,19 +112,7 @@ class Client3WH:
         """
 
         ### BEGIN: ADD YOUR CODE HERE ... ###
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-
+    
         ### END: ADD YOUR CODE HERE ... #####
 
 
