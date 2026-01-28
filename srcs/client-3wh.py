@@ -45,6 +45,11 @@ class Client3WH:
 
         self.connected = False
         self.timeout = 3
+        
+        
+        self.ack_recieved = False
+        self.lock = threading.Lock()
+        self.ack_cv = threading.Condition(self.lock)
 
     def _start_sniffer(self):
         t = threading.Thread(target=self._sniffer)
@@ -121,7 +126,17 @@ class Client3WH:
               TCP `flags`.
         """
         # Create packet
-        data_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="PA", seq=self.next_seq, ack=self.next_ack)
+        data_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="PA", seq=self.next_seq, ack=self.next_ack) / payload
+        # This is the number we expect for the ack packet from the server
+        self.next_seq += len(payload)
+        with self.ack_cv:
+            while not self.ack_recieved:
+                send(data_packet)
+                self.ack_cv.wait(timeout= self.timeout)
+                # Wait till timeout seconds and if the ack is still not recieved send it again
+            self.ack_recieved = False 
+        
+        
 
 
 def main():
