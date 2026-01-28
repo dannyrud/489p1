@@ -80,12 +80,22 @@ class Client3WH:
            2. Make sure to update the `sequence` and `acknowledgement` numbers correctly, along with the 
               TCP `flags`.
         """
-        # Send SYN
+        # Create SYN Packet
         syn_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="S", seq=self.next_seq)
         self.next_seq += 1
-        synack_packet = sr1(syn_packet)
-        
-
+        synack_packet = None
+        # Retry sending SYN packet indefinitley until SYN ACK is recieved
+        while True:
+            synack_packet = sr1(syn_packet,timeout = self.timeout)
+            if (synack_packet != None) and (TCP in synack_packet) and (synack_packet[TCP].flags.S and synack_packet[TCP].flags.A) and synack_packet[TCP].ack == self.next_seq:
+                # synack packet received
+                self.next_ack = synack_packet[TCP].seq + 1
+                ack_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="A", seq=self.next_seq, ack=self.next_ack)
+                send(ack_packet)
+                break
+            else:
+                # Not the correct packet, continue
+                continue
         self.connected = True
         self._start_sniffer()
         print('Connection Established')
@@ -110,10 +120,8 @@ class Client3WH:
            1. Make sure to update the `sequence` and `acknowledgement` numbers correctly, along with the 
               TCP `flags`.
         """
-
-        ### BEGIN: ADD YOUR CODE HERE ... ###
-    
-        ### END: ADD YOUR CODE HERE ... #####
+        # Create packet
+        data_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="PA", seq=self.next_seq, ack=self.next_ack)
 
 
 def main():
