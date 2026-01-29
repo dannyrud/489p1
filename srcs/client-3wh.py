@@ -48,21 +48,23 @@ class Client3WH:
         
         
         self.ack_recieved = False
-        self.finack_recieved = False
+        self.fin_recieved = False
         self.lock = threading.Lock()
         self.ack_cv = threading.Condition(self.lock)
-        self.finack_cv = threading.Condition(self.lock)
-        # Needed to differentiate between FINACK segments
-        self.fin_sent = False
+        self.fin_cv = threading.Condition(self.lock)
 
     def _start_sniffer(self):
         t = threading.Thread(target=self._sniffer)
         t.start()
 
     def _filter(self, pkt):
-        if (IP in pkt) and (TCP in pkt):  # capture only IP and TCP packets
-            return True
-        return False
+        if not (IP in pkt and TCP in pkt):
+            return False
+        return (
+            pkt[IP].src == self.dip and
+            pkt[TCP].sport == self.dport and
+            pkt[TCP].dport == self.sport
+        )
 
     def _sniffer(self):
         while self.connected:
@@ -86,19 +88,23 @@ class Client3WH:
             ack_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="A", seq=self.next_seq, ack=self.next_ack)
             send(ack_packet)
         # Case 2: Handle ACK's
-        elif pkt[TCP].flags.A and not pkt[TCP].flags.F:
+        if pkt[TCP].flags.A:
             if pkt[TCP].ack == self.next_seq:
                 # We have recieved our ack, notify main sending thread
                 with self.ack_cv:
                     self.ack_recieved = True
                     self.ack_cv.notify()
-        # Case 3: Handle FIN/FINACK
-        elif pkt[TCP].flags.A and pkt[TCP].flags.F:
-            if self.fin_sent:
-                # We must ack this finack packet (we started the closing)
-            else:
-                # This is the initial fin from the server, we must ACK it
-            
+        # Case 3: Handle FIN from server
+        if pkt[TCP].flags.F:
+            # Fin consumes one sequence number, we acknowlege the fin by increasing next ack
+            if pkt[TCP].seq == self.next_ack:
+                self.next_ack += 1
+            ack_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="A", seq=self.next_seq, ack=self.next_ack)
+            send(ack_packet)
+            with self.fin_cv:
+                # Notify main thread that server has closed
+                self.fin_recieved = True
+                self.fin_cv.notify()
             
 
     def connect(self):
@@ -138,14 +144,18 @@ class Client3WH:
         # Send just the fin packet, sniffer thread will recieve finack and respond to it
         fin_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="FA", seq=self.next_seq, ack= self.next_ack)
         self.next_seq += 1
-        with self.finack_cv:
-            self.fin_sent = True
-            while not self.finack_recieved:
+        with self.ack_cv:
+            while not self.ack_recieved:
                 send(fin_packet)
-                self.finack_cv.wait(timeout= self.timeout)
+                self.ack_cv.wait(timeout= self.timeout)
+            self.ack_recieved = False 
                 
-        # If we reached here, sniffer thread recieved the finack and sent the ack, connection is closed
-        # Resetting ack_recieved is now pointless
+        # Our side of the connection is closed. Now we must wait for the servers fin to be sent
+        with self.fin_cv:
+            while not self.fin_recieved:
+                self.fin_cv.wait()
+        
+        # If we reached here servers fin must have also been recieved, connection is closed
         
         self.connected = False
         print('Connection Closed')
