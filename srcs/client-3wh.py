@@ -48,8 +48,12 @@ class Client3WH:
         
         
         self.ack_recieved = False
+        self.finack_recieved = False
         self.lock = threading.Lock()
         self.ack_cv = threading.Condition(self.lock)
+        self.finack_cv = threading.Condition(self.lock)
+        # Needed to differentiate between FINACK segments
+        self.fin_sent = False
 
     def _start_sniffer(self):
         t = threading.Thread(target=self._sniffer)
@@ -73,10 +77,29 @@ class Client3WH:
            2. If the incoming packet is a FIN (or FINACK) packet, send an appropriate acknowledgement or FINACK packet
               to the server with correct `sequence` and `acknowledgement` numbers.
         """
-
-        ### BEGIN: ADD YOUR CODE HERE ... ###
-        
-        ### END: ADD YOUR CODE HERE ... #####
+        # Case 1: Handle Data
+        if len(pkt[TCP].payload) > 0:
+            # If not a duplicate increase next ack
+            if pkt[TCP].seq == self.next_ack:
+                self.next_ack += len(pkt[TCP].payload)
+            # Send ack even if packet is a duplicate
+            ack_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="A", seq=self.next_seq, ack=self.next_ack)
+            send(ack_packet)
+        # Case 2: Handle ACK's
+        elif pkt[TCP].flags.A and not pkt[TCP].flags.F:
+            if pkt[TCP].ack == self.next_seq:
+                # We have recieved our ack, notify main sending thread
+                with self.ack_cv:
+                    self.ack_recieved = True
+                    self.ack_cv.notify()
+        # Case 3: Handle FIN/FINACK
+        elif pkt[TCP].flags.A and pkt[TCP].flags.F:
+            if self.fin_sent:
+                # We must ack this finack packet (we started the closing)
+            else:
+                # This is the initial fin from the server, we must ACK it
+            
+            
 
     def connect(self):
         """TODO(2): Implement TCP's three-way-handshake protocol for establishing a connection. Here are some
@@ -112,11 +135,18 @@ class Client3WH:
            2. Make sure to update the `sequence` and `acknowledgement` numbers correctly, along with the 
               TCP `flags`.
         """
-
-        ### BEGIN: ADD YOUR CODE HERE ... ###
+        # Send just the fin packet, sniffer thread will recieve finack and respond to it
+        fin_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="FA", seq=self.next_seq, ack= self.next_ack)
+        self.next_seq += 1
+        with self.finack_cv:
+            self.fin_sent = True
+            while not self.finack_recieved:
+                send(fin_packet)
+                self.finack_cv.wait(timeout= self.timeout)
+                
+        # If we reached here, sniffer thread recieved the finack and sent the ack, connection is closed
+        # Resetting ack_recieved is now pointless
         
-        ### END: ADD YOUR CODE HERE ... #####
-
         self.connected = False
         print('Connection Closed')
 
