@@ -45,13 +45,6 @@ class Client3WH:
 
         self.connected = False
         self.timeout = 3
-        
-        
-        self.ack_recieved = False
-        self.fin_recieved = False
-        self.lock = threading.Lock()
-        self.ack_cv = threading.Condition(self.lock)
-        self.fin_cv = threading.Condition(self.lock)
 
     def _start_sniffer(self):
         t = threading.Thread(target=self._sniffer)
@@ -60,11 +53,7 @@ class Client3WH:
     def _filter(self, pkt):
         if not (IP in pkt and TCP in pkt):
             return False
-        return (
-            pkt[IP].src == self.dip and
-            pkt[TCP].sport == self.dport and
-            pkt[TCP].dport == self.sport
-        )
+        return True
 
     def _sniffer(self):
         while self.connected:
@@ -79,34 +68,40 @@ class Client3WH:
            2. If the incoming packet is a FIN (or FINACK) packet, send an appropriate acknowledgement or FINACK packet
               to the server with correct `sequence` and `acknowledgement` numbers.
         """
+        # Only process packets from the server (not outgoing packets)
+        if pkt[IP].src != self.dip:
+            return
+        if pkt[TCP].sport != self.dport:
+            return
+        if pkt[TCP].dport != self.sport:
+            return
+        tcp = pkt[TCP]
+        
         # Case 1: Handle Data
-        if len(pkt[TCP].payload) > 0:
-            # If not a duplicate increase next ack
-            with self.lock:
-                if pkt[TCP].seq == self.next_ack:
-                    self.next_ack += len(pkt[TCP].payload)
-                # Send ack even if packet is a duplicate
-                ack_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="A", seq=self.next_seq, ack=self.next_ack)
-            send(ack_packet)
-        # Case 2: Handle ACK's
-        if pkt[TCP].flags.A:
-            with self.ack_cv:
-                if pkt[TCP].ack == self.next_seq:
-                    # We have recieved our ack, notify main sending thread
-                    self.ack_recieved = True
-                    self.ack_cv.notify()
-        # Case 3: Handle FIN from server
-        if pkt[TCP].flags.F:
+        payload_len = len(tcp.payload)
+        if payload_len > 0:
+            if tcp.seq == self.next_ack:
+                self.next_ack += payload_len
+
+            ack = self.ip / TCP(
+                sport=self.sport, dport=self.dport,
+                flags="A", seq=self.next_seq, ack=self.next_ack
+            )
+            send(ack)
+            return
+        
+        # Case 2: Handle FIN from server
+        if tcp.flags.F:
             # Fin consumes one sequence number, we acknowlege the fin by increasing next ack
-            with self.lock:
-                if pkt[TCP].seq == self.next_ack:
-                    self.next_ack += 1
-                ack_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="A", seq=self.next_seq, ack=self.next_ack)
-            send(ack_packet)
-            with self.fin_cv:
-                # Notify main thread that server has closed
-                self.fin_recieved = True
-                self.fin_cv.notify()
+            if tcp.seq == self.next_ack:
+                self.next_ack += 1
+                
+            ack = self.ip / TCP(
+                sport=self.sport, dport=self.dport,
+                flags="A", seq=self.next_seq, ack=self.next_ack
+            )
+            send(ack, verbose=False)
+            return
             
 
     def connect(self):
@@ -116,22 +111,31 @@ class Client3WH:
            2. Make sure to update the `sequence` and `acknowledgement` numbers correctly, along with the 
               TCP `flags`.
         """
-        # Create SYN Packet
-        syn_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="S", seq=self.next_seq)
+        syn_packet = self.ip / TCP(
+            sport=self.sport, dport=self.dport,
+            flags="S", seq=self.next_seq
+        )
         self.next_seq += 1
-        synack_packet = None
-        # Retry sending SYN packet indefinitley until SYN ACK is recieved
+        
+        bpf = (
+            "tcp and "
+            "src host %s and "
+            "src port %d and "
+            "dst port %d and "
+            "tcp[13] & 0x12 == 0x12"
+        ) % (self.dip, self.dport, self.sport)
+
         while True:
-            synack_packet = sr1(syn_packet,timeout = self.timeout)
-            if (synack_packet != None) and (TCP in synack_packet) and (synack_packet[TCP].flags.S and synack_packet[TCP].flags.A) and synack_packet[TCP].ack == self.next_seq:
-                # synack packet received
-                self.next_ack = synack_packet[TCP].seq + 1
-                ack_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="A", seq=self.next_seq, ack=self.next_ack)
-                send(ack_packet)
-                break
-            else:
-                # Not the correct packet, continue
+            synack = sr1(syn_packet, timeout=self.timeout, filter=bpf)
+            if synack is None:
                 continue
+            if synack[TCP].ack != self.next_seq:
+                continue
+            # synack packet received    
+            self.next_ack = synack[TCP].seq + 1
+            ack_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="A", seq=self.next_seq, ack=self.next_ack)
+            send(ack_packet)
+            break
         self.connected = True
         self._start_sniffer()
         print('Connection Established')
@@ -143,23 +147,31 @@ class Client3WH:
            2. Make sure to update the `sequence` and `acknowledgement` numbers correctly, along with the 
               TCP `flags`.
         """
-        with self.ack_cv:
-            # Send just the fin packet, sniffer thread will recieve finack and respond to it
-            fin_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="FA", seq=self.next_seq, ack= self.next_ack)
-            self.next_seq += 1
-            self.ack_recieved = False
-            while not self.ack_recieved:
-                send(fin_packet)
-                self.ack_cv.wait(timeout= self.timeout)
-            self.ack_recieved = False 
-                
-        # Our side of the connection is closed. Now we must wait for the servers fin to be sent
-        with self.fin_cv:
-            while not self.fin_recieved:
-                self.fin_cv.wait()
-        
-        # If we reached here servers fin must have also been recieved, connection is closed
-        
+        fin_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="FA", seq=self.next_seq, ack= self.next_ack)
+        self.next_seq += 1
+        def finack_filter(p):
+            if not (IP in p and TCP in p):
+                return False
+            return (
+                p[IP].src == self.dip and
+                p[TCP].sport == self.dport and
+                p[TCP].dport == self.sport and
+                p[TCP].flags.A and p[TCP].ack == self.next_seq
+            )
+        bpf = (
+            "tcp and "
+            "src host %s and "
+            "src port %d and "
+            "dst port %d and "
+            "tcp[13] & 0x10 != 0"
+        ) % (self.dip, self.dport, self.sport)
+        while True:
+            finack = sr1(fin_packet, timeout=self.timeout, filter=bpf) 
+            if finack is None:
+                continue
+            if finack[TCP].ack == self.next_seq:
+                break
+        # Server fin handled in other thread
         self.connected = False
         print('Connection Closed')
 
@@ -168,17 +180,22 @@ class Client3WH:
            1. Make sure to update the `sequence` and `acknowledgement` numbers correctly, along with the 
               TCP `flags`.
         """
-        with self.ack_cv:
-            # Create packet
-            data_packet = self.ip / TCP(sport=self.sport, dport=self.dport, flags="PA", seq=self.next_seq, ack=self.next_ack) / payload
-            # This is the number we expect for the ack packet from the server
-            self.next_seq += len(payload)
-            self.ack_recieved = False
-            while not self.ack_recieved:
-                send(data_packet)
-                self.ack_cv.wait(timeout= self.timeout)
-                # Wait till timeout seconds and if the ack is still not recieved send it again
-            self.ack_recieved = False 
+        data = self.ip / TCP(sport=self.sport, dport=self.dport, flags="PA", seq=self.next_seq, ack=self.next_ack) / payload
+
+        self.next_seq += len(payload)
+        bpf = (
+            "tcp and "
+            "src host %s and "
+            "src port %d and "
+            "dst port %d and "
+            "tcp[13] & 0x10 != 0"
+        ) % (self.dip, self.dport, self.sport)
+        while True:
+            ack = sr1(data, timeout=self.timeout, filter=bpf)
+            if ack is None:
+                continue
+            if ack[TCP].ack == self.next_seq:
+                break
 
 def main():
     """Parse command-line arguments and call client function """
