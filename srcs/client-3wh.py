@@ -100,7 +100,7 @@ class Client3WH:
                 sport=self.sport, dport=self.dport,
                 flags="A", seq=self.next_seq, ack=self.next_ack
             )
-            send(ack, verbose=False)
+            send(ack)
             return
             
 
